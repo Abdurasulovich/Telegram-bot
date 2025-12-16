@@ -24,3 +24,5 @@ artifacts/
 
 # Sensitive data
 *.Development.json
+*.appsettings.json
+*.env
