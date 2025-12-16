@@ -16,7 +16,7 @@ if (File.Exists("appsettings.json"))
 }
 
 // If token not in appsettings, try environment variable
-botToken ??= Environment.GetEnvironmentVariable("BOT_TOKEN");
+botToken ??= Environment.GetEnvironmentVariable("BotConfiguration:BotToken");
 
 if (string.IsNullOrEmpty(botToken))
 {

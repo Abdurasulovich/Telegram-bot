@@ -11,13 +11,52 @@ namespace TelegramSurveyBot.Services;
 
 public class BotService
 {
-    // Admin ID - bu yerga o'zingizning Telegram ID'ingizni kiriting
-    private const long ADMIN_ID = 8022427685; // TODO: O'zingizning Telegram ID'ingizni kiriting
-    private string CurrentMenu = "";
-
     private readonly ITelegramBotClient _botClient;
     private readonly AppDbContext _dbContext;
     private readonly Dictionary<long, UserState> _userStates = new();
+
+    // Admin management methods
+    private async Task<bool> IsAdminAsync(long telegramId)
+    {
+        return await _dbContext.Admins.AnyAsync(a => a.TelegramId == telegramId);
+    }
+
+    private async Task<List<Models.Admin>> GetAllAdminsAsync()
+    {
+        return await _dbContext.Admins.ToListAsync();
+    }
+
+    private async Task<bool> AddAdminAsync(long telegramId, long addedBy, Telegram.Bot.Types.User? userInfo = null)
+    {
+        // Check if already admin
+        if (await IsAdminAsync(telegramId))
+            return false;
+
+        var admin = new Models.Admin
+        {
+            TelegramId = telegramId,
+            Username = userInfo?.Username,
+            FirstName = userInfo?.FirstName,
+            LastName = userInfo?.LastName,
+            AddedBy = addedBy,
+            AddedAt = DateTime.UtcNow
+        };
+
+        await _dbContext.Admins.AddAsync(admin);
+        await _dbContext.SaveChangesAsync();
+        return true;
+    }
+
+    private async Task<bool> RemoveAdminAsync(long telegramId)
+    {
+        var admin = await _dbContext.Admins.FirstOrDefaultAsync(a => a.TelegramId == telegramId);
+        if (admin == null)
+            return false;
+
+        _dbContext.Admins.Remove(admin);
+        await _dbContext.SaveChangesAsync();
+        return true;
+    }
 
     public BotService(string botToken)
     {
@@ -154,7 +193,7 @@ public class BotService
             Console.WriteLine($"[LOG] Back button bosildi");
 
             // Check if admin is in special mode
-            if (chatId == ADMIN_ID && ADMIN_ID != 0 && _userStates.ContainsKey(chatId))
+            if (await IsAdminAsync(chatId) && _userStates.ContainsKey(chatId))
             {
                 var state = _userStates[chatId];
 
@@ -176,6 +215,14 @@ public class BotService
 
                 // If in survey selection for participation, go back to main menu
                 if (state.State == "admin_participate_survey_selection")
+                {
+                    _userStates.Remove(chatId);
+                    await ShowMainMenuAsync(chatId, user, cancellationToken);
+                    return;
+                }
+
+                // If in admin management menu, go back to main menu
+                if (state.State == "admin_management_menu")
                 {
                     _userStates.Remove(chatId);
                     await ShowMainMenuAsync(chatId, user, cancellationToken);
@@ -212,9 +259,9 @@ public class BotService
         }
 
         // Handle admin buttons
-        if (chatId == ADMIN_ID && ADMIN_ID != 0)
+        if (await IsAdminAsync(chatId))
         {
-            if (message.Text == "✍️ So'rovnomada qatnashish" || message.Text == "✍️ Примите участие в опросе" || message.Text == "✍️ So‘rawnamada qatnasıw")
+            if (message.Text == "✍️ So'rovnomada qatnashish" || message.Text == "✍️ Примите участие в опросе" || message.Text == "✍️ So'rawnamada qatnasıw")
             {
                 Console.WriteLine($"[LOG] Admin - So'rovnomada qatnashish tanlandi");
                 await ShowAdminSurveySelectionAsync(chatId, "participate", cancellationToken);
@@ -224,6 +271,12 @@ public class BotService
             {
                 Console.WriteLine($"[LOG] Admin - Statistikani ko'rish tanlandi");
                 await ShowAdminSurveySelectionAsync(chatId, "stats", cancellationToken);
+                return;
+            }
+            else if (message.Text == "👥 Adminlar ro'yxati" || message.Text == "👥 Список администраторов" || message.Text == "👥 Administratorlar dizimi")
+            {
+                Console.WriteLine($"[LOG] Admin - Adminlar ro'yxati tanlandi");
+                await ShowAdminManagementMenuAsync(chatId, cancellationToken);
                 return;
             }
         }
@@ -243,7 +296,7 @@ public class BotService
                 : "teacher";
 
             // Check if admin is viewing stats or participating
-            if (chatId == ADMIN_ID && ADMIN_ID != 0 && _userStates.ContainsKey(chatId))
+            if (await IsAdminAsync(chatId) && _userStates.ContainsKey(chatId))
             {
                 var state = _userStates[chatId];
 
@@ -267,6 +320,30 @@ public class BotService
         }
 
 
+
+        // Handle admin management buttons
+        if (await IsAdminAsync(chatId))
+        {
+            if (message.Text == "➕ Admin qo'shish" || message.Text == "➕ Добавить администратора" || message.Text == "➕ Administrator qosıw")
+            {
+                Console.WriteLine($"[LOG] Admin qo'shish bosildi");
+                await RequestAdminIdAsync(chatId, cancellationToken);
+                return;
+            }
+            else if (message.Text == "📋 Adminlarni ko'rish" || message.Text == "📋 Показать администраторов" || message.Text == "📋 Administratorlardı kóriw")
+            {
+                Console.WriteLine($"[LOG] Adminlarni ko'rish bosildi");
+                await ShowAdminListAsync(chatId, cancellationToken);
+                return;
+            }
+            else if (message.Text == "❌ Bekor qilish" || message.Text == "❌ Отменить" || message.Text == "❌ Biykar etiw")
+            {
+                Console.WriteLine($"[LOG] Bekor qilish bosildi");
+                _userStates.Remove(chatId);
+                await ShowAdminManagementMenuAsync(chatId, cancellationToken);
+                return;
+            }
+        }
 
         // Handle "Tugatish" button
         if (message.Text == "🛑 So'rovnomani tugatish" ||
@@ -292,7 +369,12 @@ public class BotService
             var state = _userStates[chatId];
             Console.WriteLine($"[LOG] User state mavjud: {state.State}");
 
-            if (state.State == "awaiting_text_input" && message.Text != null)
+            if (state.State == "awaiting_admin_id" && message.Text != null)
+            {
+                Console.WriteLine($"[LOG] Admin ID input qabul qilindi");
+                await HandleAdminIdInputAsync(chatId, message.Text, cancellationToken);
+            }
+            else if (state.State == "awaiting_text_input" && message.Text != null)
             {
                 Console.WriteLine($"[LOG] Text input qabul qilindi");
                 await HandleSurveyAnswerAsync(chatId, message.Text, state, cancellationToken);
@@ -665,8 +747,17 @@ public class BotService
             "kk" => "Артқa",
             _ => "Orqaga"
         };
+
+        var adminListTitle = user.SelectedLanguage switch
+        {
+            "uz" => "Adminlar ro'yxati",
+            "ru" => "Список администраторов",
+            "kk" => "Administratorlar dizimi",
+            _ => "Adminlar ro'yxati"
+        };
+
         // Check if user is admin - show admin menu with ReplyKeyboard
-        if (chatId == ADMIN_ID && ADMIN_ID != 0)
+        if (await IsAdminAsync(chatId))
         {
             var adminMessage = $"👨‍💼 {selectTitle}";
 
@@ -674,6 +765,7 @@ public class BotService
             {
                 new KeyboardButton[] { $"✍️ {surveyTitle}" },
                 new KeyboardButton[] { $"📈 {seeStatisticTitle}" },
+                new KeyboardButton[] { $"👥 {adminListTitle}" },
                 new KeyboardButton[] { $"🔙 {backTitle}" }
             })
             {
@@ -1606,6 +1698,252 @@ public class BotService
                 cancellationToken: cancellationToken
             );
         }
+    }
+
+    // ==================== ADMIN MANAGEMENT METHODS ====================
+
+    private async Task ShowAdminManagementMenuAsync(long chatId, CancellationToken cancellationToken)
+    {
+        var user = await _dbContext.Users.FirstOrDefaultAsync(u => u.Id == chatId, cancellationToken);
+        if (user == null) return;
+
+        var title = user.SelectedLanguage switch
+        {
+            "uz" => "👥 Adminlar ro'yxati\n\nTanlang:",
+            "ru" => "👥 Список администраторов\n\nВыберите:",
+            "kk" => "👥 Administratorlar dizimi\n\nSaylań:",
+            _ => "👥 Adminlar ro'yxati\n\nTanlang:"
+        };
+
+        var addAdminText = user.SelectedLanguage switch
+        {
+            "uz" => "➕ Admin qo'shish",
+            "ru" => "➕ Добавить администратора",
+            "kk" => "➕ Administrator qosıw",
+            _ => "➕ Admin qo'shish"
+        };
+
+        var listAdminsText = user.SelectedLanguage switch
+        {
+            "uz" => "📋 Adminlarni ko'rish",
+            "ru" => "📋 Показать администраторов",
+            "kk" => "📋 Administratorlardı kóriw",
+            _ => "📋 Adminlarni ko'rish"
+        };
+
+        var backText = user.SelectedLanguage switch
+        {
+            "uz" => "🔙 Orqaga",
+            "ru" => "🔙 Назад",
+            "kk" => "🔙 Артқa",
+            _ => "🔙 Orqaga"
+        };
+
+        // Set state for admin management
+        if (!_userStates.ContainsKey(chatId))
+        {
+            _userStates[chatId] = new UserState();
+        }
+        _userStates[chatId].State = "admin_management_menu";
+
+        var keyboard = new ReplyKeyboardMarkup(new[]
+        {
+            new KeyboardButton[] { addAdminText },
+            new KeyboardButton[] { listAdminsText },
+            new KeyboardButton[] { backText }
+        })
+        {
+            ResizeKeyboard = true,
+            OneTimeKeyboard = false
+        };
+
+        await _botClient.SendMessage(
+            chatId,
+            title,
+            replyMarkup: keyboard,
+            cancellationToken: cancellationToken
+        );
+    }
+
+    private async Task ShowAdminListAsync(long chatId, CancellationToken cancellationToken)
+    {
+        var user = await _dbContext.Users.FirstOrDefaultAsync(u => u.Id == chatId, cancellationToken);
+        if (user == null) return;
+
+        var admins = await GetAllAdminsAsync();
+
+        var title = user.SelectedLanguage switch
+        {
+            "uz" => "👥 Adminlar ro'yxati:",
+            "ru" => "👥 Список администраторов:",
+            "kk" => "👥 Administratorlar dizimi:",
+            _ => "👥 Adminlar ro'yxati:"
+        };
+
+        var message = $"{title}\n\n";
+
+        foreach (var admin in admins)
+        {
+            var name = !string.IsNullOrEmpty(admin.FirstName)
+                ? $"{admin.FirstName} {admin.LastName ?? ""}".Trim()
+                : "N/A";
+            var username = !string.IsNullOrEmpty(admin.Username) ? $"@{admin.Username}" : "";
+            message += $"👤 {name} {username}\n";
+            message += $"   ID: {admin.TelegramId}\n";
+            message += $"   {admin.AddedAt:dd.MM.yyyy HH:mm}\n\n";
+        }
+
+        var backText = user.SelectedLanguage switch
+        {
+            "uz" => "🔙 Orqaga",
+            "ru" => "🔙 Назад",
+            "kk" => "🔙 Артқa",
+            _ => "🔙 Orqaga"
+        };
+
+        var keyboard = new ReplyKeyboardMarkup(new[]
+        {
+            new KeyboardButton[] { backText }
+        })
+        {
+            ResizeKeyboard = true,
+            OneTimeKeyboard = false
+        };
+
+        await _botClient.SendMessage(
+            chatId,
+            message,
+            replyMarkup: keyboard,
+            cancellationToken: cancellationToken
+        );
+    }
+
+    private async Task RequestAdminIdAsync(long chatId, CancellationToken cancellationToken)
+    {
+        var user = await _dbContext.Users.FirstOrDefaultAsync(u => u.Id == chatId, cancellationToken);
+        if (user == null) return;
+
+        var message = user.SelectedLanguage switch
+        {
+            "uz" => "📝 Yangi admin qo'shish\n\nQo'shmoqchi bo'lgan adminning Telegram ID raqamini kiriting (9-10 xonali son):",
+            "ru" => "📝 Добавить нового администратора\n\nВведите Telegram ID администратора, которого хотите добавить (9-10 значное число):",
+            "kk" => "📝 Jańa administrator qosıw\n\nQosıwshı bolǵan administratordıń Telegram ID nomerini kiritiń (9-10 sanli):",
+            _ => "📝 Yangi admin qo'shish\n\nQo'shmoqchi bo'lgan adminning Telegram ID raqamini kiriting (9-10 xonali son):"
+        };
+
+        var cancelText = user.SelectedLanguage switch
+        {
+            "uz" => "❌ Bekor qilish",
+            "ru" => "❌ Отменить",
+            "kk" => "❌ Biykar etiw",
+            _ => "❌ Bekor qilish"
+        };
+
+        // Set state to await admin ID
+        if (!_userStates.ContainsKey(chatId))
+        {
+            _userStates[chatId] = new UserState();
+        }
+        _userStates[chatId].State = "awaiting_admin_id";
+
+        var keyboard = new ReplyKeyboardMarkup(new[]
+        {
+            new KeyboardButton[] { cancelText }
+        })
+        {
+            ResizeKeyboard = true,
+            OneTimeKeyboard = false
+        };
+
+        await _botClient.SendMessage(
+            chatId,
+            message,
+            replyMarkup: keyboard,
+            cancellationToken: cancellationToken
+        );
+    }
+
+    private async Task HandleAdminIdInputAsync(long chatId, string input, CancellationToken cancellationToken)
+    {
+        var user = await _dbContext.Users.FirstOrDefaultAsync(u => u.Id == chatId, cancellationToken);
+        if (user == null) return;
+
+        // Validate input
+        if (!long.TryParse(input, out long adminId) || input.Length < 9 || input.Length > 10)
+        {
+            var errorMessage = user.SelectedLanguage switch
+            {
+                "uz" => "❌ Noto'g'ri format! Telegram ID 9-10 xonali son bo'lishi kerak. Qaytadan kiriting:",
+                "ru" => "❌ Неверный формат! Telegram ID должен быть 9-10 значным числом. Попробуйте снова:",
+                "kk" => "❌ Nadurıs format! Telegram ID 9-10 sanli bolıwı kerek. Qayta kiritiń:",
+                _ => "❌ Noto'g'ri format! Telegram ID 9-10 xonali son bo'lishi kerak. Qaytadan kiriting:"
+            };
+
+            await _botClient.SendMessage(
+                chatId,
+                errorMessage,
+                cancellationToken: cancellationToken
+            );
+            return;
+        }
+
+        // Check if already admin
+        if (await IsAdminAsync(adminId))
+        {
+            var alreadyAdminMessage = user.SelectedLanguage switch
+            {
+                "uz" => "⚠️ Bu foydalanuvchi allaqachon admin!",
+                "ru" => "⚠️ Этот пользователь уже является администратором!",
+                "kk" => "⚠️ Bul paydalanıwshı aldınnan administrator!",
+                _ => "⚠️ Bu foydalanuvchi allaqachon admin!"
+            };
+
+            await _botClient.SendMessage(
+                chatId,
+                alreadyAdminMessage,
+                cancellationToken: cancellationToken
+            );
+
+            // Clear state and go back to admin management menu
+            _userStates.Remove(chatId);
+            await ShowAdminManagementMenuAsync(chatId, cancellationToken);
+            return;
+        }
+
+        // Add admin
+        var success = await AddAdminAsync(adminId, chatId);
+
+        string resultMessage;
+        if (success)
+        {
+            resultMessage = user.SelectedLanguage switch
+            {
+                "uz" => $"✅ Admin muvaffaqiyatli qo'shildi!\nTelegram ID: {adminId}",
+                "ru" => $"✅ Администратор успешно добавлен!\nTelegram ID: {adminId}",
+                "kk" => $"✅ Administrator tabıslı qosıldı!\nTelegram ID: {adminId}",
+                _ => $"✅ Admin muvaffaqiyatli qo'shildi!\nTelegram ID: {adminId}"
+            };
+        }
+        else
+        {
+            resultMessage = user.SelectedLanguage switch
+            {
+                "uz" => "❌ Admin qo'shishda xatolik yuz berdi!",
+                "ru" => "❌ Произошла ошибка при добавлении администратора!",
+                "kk" => "❌ Administrator qosıwda qátelik júz berdi!",
+                _ => "❌ Admin qo'shishda xatolik yuz berdi!"
+            };
+        }
+
+        await _botClient.SendMessage(
+            chatId,
+            resultMessage,
+            cancellationToken: cancellationToken
+        );
+
+        // Clear state and go back to admin management menu
+        _userStates.Remove(chatId);
+        await ShowAdminManagementMenuAsync(chatId, cancellationToken);
     }
 }
 
