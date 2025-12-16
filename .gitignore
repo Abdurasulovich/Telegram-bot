@@ -23,5 +23,4 @@ project.fragment.lock.json
 artifacts/
 
 # Sensitive data
-appsettings.json
 *.Development.json
