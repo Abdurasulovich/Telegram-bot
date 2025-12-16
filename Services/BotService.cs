@@ -13,6 +13,7 @@ public class BotService
 {
     // Admin ID - bu yerga o'zingizning Telegram ID'ingizni kiriting
     private const long ADMIN_ID = 8022427685; // TODO: O'zingizning Telegram ID'ingizni kiriting
+    private string CurrentMenu = "";
 
     private readonly ITelegramBotClient _botClient;
     private readonly AppDbContext _dbContext;
@@ -152,40 +153,58 @@ public class BotService
         {
             Console.WriteLine($"[LOG] Back button bosildi");
 
-            // Check if admin is in stats mode
+            // Check if admin is in special mode
             if (chatId == ADMIN_ID && ADMIN_ID != 0 && _userStates.ContainsKey(chatId))
             {
                 var state = _userStates[chatId];
+
+                // If viewing statistics, go back to survey selection for stats
+                if (state.State == "admin_stats_viewing")
+                {
+                    state.State = "admin_stats_survey_selection";
+                    await ShowAdminSurveySelectionAsync(chatId, "stats", cancellationToken);
+                    return;
+                }
+
+                // If in survey selection for stats, go back to main menu
+                if (state.State == "admin_stats_survey_selection")
+                {
+                    _userStates.Remove(chatId);
+                    await ShowMainMenuAsync(chatId, user, cancellationToken);
+                    return;
+                }
+
+                // If in survey selection for participation, go back to main menu
+                if (state.State == "admin_participate_survey_selection")
+                {
+                    _userStates.Remove(chatId);
+                    await ShowMainMenuAsync(chatId, user, cancellationToken);
+                    return;
+                }
+
+                // If in old admin_stats mode (backward compatibility)
                 if (state.State == "admin_stats")
                 {
-                    // Go back to survey selection for stats
-                    await ShowAdminSurveySelectionAsync(chatId, "stats", cancellationToken);
+                    _userStates.Remove(chatId);
+                    await ShowMainMenuAsync(chatId, user, cancellationToken);
                     return;
                 }
             }
 
-            // Regular user or admin from main menu - go back to language selection
-            //if (chatId == ADMIN_ID && ADMIN_ID != 0 && user != null)
-            //{
-            //    // Admin going back from main menu - return to main menu
-            //    await ShowMainMenuAsync(chatId, user, cancellationToken);
-            //}
-            //else
-            //{
-                await ShowLanguageSelectionAsync(chatId, cancellationToken);
-            //}
+            // Both regular user and admin from main menu - go back to language selection
+            await ShowLanguageSelectionAsync(chatId, cancellationToken);
             return;
         }
 
         // Handle language selection from ReplyKeyboard
-        if (message.Text == "🇺🇿 O'zbek" || message.Text == "🇷🇺 Русский" || message.Text == "🇶🇦 Qoraqalpoq")
+        if (message.Text == "🇺🇿 O'zbek" || message.Text == "🇷🇺 Русский" || message.Text == "Qaraqalpaq")
         {
             Console.WriteLine($"[LOG] Til tanlandi: {message.Text}");
             var language = message.Text switch
             {
                 "🇺🇿 O'zbek" => "uz",
                 "🇷🇺 Русский" => "ru",
-                "🇶🇦 Qoraqalpoq" => "kk",
+                "Qaraqalpaq" => "kk",
                 _ => "uz"
             };
             await HandleLanguageSelectionFromTextAsync(chatId, language, message.From!, cancellationToken);
@@ -201,7 +220,7 @@ public class BotService
                 await ShowAdminSurveySelectionAsync(chatId, "participate", cancellationToken);
                 return;
             }
-            else if (message.Text == "📈 Statistikani ko'rish")
+            else if (message.Text == "📈 Statistikani ko'rish" || message.Text == "📈 Просмотреть статистику" || message.Text == "📈 Statistikanı kóriw")
             {
                 Console.WriteLine($"[LOG] Admin - Statistikani ko'rish tanlandi");
                 await ShowAdminSurveySelectionAsync(chatId, "stats", cancellationToken);
@@ -211,6 +230,8 @@ public class BotService
 
         // Handle survey selection from ReplyKeyboard (both admin and regular users)
         if (message.Text == "📝 Korrupsiya so'rovnomasi" ||
+            message.Text == "📝 Опрос о коррупции" ||
+            message.Text == "📝 Korrupsiya sorawnomasi" ||
             message.Text == "📊 O'qituvchilarni baholash" ||
             message.Text == "📊 Оценка преподавателей" ||
             message.Text == "📊 Oqıtıwshılardı bahalaw")
@@ -225,17 +246,27 @@ public class BotService
             if (chatId == ADMIN_ID && ADMIN_ID != 0 && _userStates.ContainsKey(chatId))
             {
                 var state = _userStates[chatId];
-                if (state.State == "admin_stats")
+
+                // If admin is in stats mode, show statistics
+                if (state.State == "admin_stats_survey_selection" || state.State == "admin_stats")
                 {
                     // Admin wants to see statistics
                     await ShowSurveyStatisticsAsync(chatId, surveyType, cancellationToken);
                     return;
+                }
+
+                // If admin is in participate mode, clear state and let them participate
+                if (state.State == "admin_participate_survey_selection")
+                {
+                    _userStates.Remove(chatId);
                 }
             }
 
             await HandleSurveySelectionFromTextAsync(chatId, surveyType, cancellationToken);
             return;
         }
+
+
 
         // Handle "Tugatish" button
         if (message.Text == "🛑 So'rovnomani tugatish" ||
@@ -407,7 +438,7 @@ public class BotService
         return new ReplyKeyboardMarkup(new[]
         {
             new KeyboardButton[] { "🇺🇿 O'zbek", "🇷🇺 Русский" },
-            new KeyboardButton[] { "🇶🇦 Qoraqalpoq" }
+            new KeyboardButton[] { "Qaraqalpaq" }
         })
         {
             ResizeKeyboard = true,
@@ -1322,25 +1353,53 @@ public class BotService
             ? $"👨‍💼 {selectSurveyTitle}"
             : $"👨‍💼 {chooseSurvey}";
 
-        var keyboard = new ReplyKeyboardMarkup(new[]
-        {
-            new KeyboardButton[] { $"📊 {teacherButtonText}" },
-            new KeyboardButton[] { $"📝 {corruption}" },
-            new KeyboardButton[] { $"🔙 {backTitle}" }
-        })
-        {
-            ResizeKeyboard = true,
-            OneTimeKeyboard = false
-        };
+        ReplyKeyboardMarkup keyboard;
 
-        // Set admin state for statistics mode
+        // For participation mode, respect language setting (corruption survey only in Uzbek)
+        if (mode == "participate" && user.SelectedLanguage != "uz")
+        {
+            // For non-Uzbek languages, show only teacher evaluation
+            keyboard = new ReplyKeyboardMarkup(new[]
+            {
+                new KeyboardButton[] { $"📊 {teacherButtonText}" },
+                new KeyboardButton[] { $"🔙 {backTitle}" }
+            })
+            {
+                ResizeKeyboard = true,
+                OneTimeKeyboard = false
+            };
+        }
+        else
+        {
+            // For stats mode OR Uzbek language in participate mode, show both surveys
+            keyboard = new ReplyKeyboardMarkup(new[]
+            {
+                new KeyboardButton[] { $"📊 {teacherButtonText}" },
+                new KeyboardButton[] { $"📝 {corruption}" },
+                new KeyboardButton[] { $"🔙 {backTitle}" }
+            })
+            {
+                ResizeKeyboard = true,
+                OneTimeKeyboard = false
+            };
+        }
+
+        // Set admin state based on mode
         if (mode == "stats")
         {
             if (!_userStates.ContainsKey(chatId))
             {
                 _userStates[chatId] = new UserState();
             }
-            _userStates[chatId].State = "admin_stats";
+            _userStates[chatId].State = "admin_stats_survey_selection";
+        }
+        else if (mode == "participate")
+        {
+            if (!_userStates.ContainsKey(chatId))
+            {
+                _userStates[chatId] = new UserState();
+            }
+            _userStates[chatId].State = "admin_participate_survey_selection";
         }
 
         await _botClient.SendMessage(
@@ -1358,6 +1417,8 @@ public class BotService
         try
         {
             var surveyName = surveyType == "teacher" ? "teacher_evaluation" : "corruption";
+            var user = await _dbContext.Users.FirstOrDefaultAsync(u => u.Id == chatId, cancellationToken);
+
 
             // Get all responses for this survey
             var responses = await _dbContext.UserResponses
@@ -1408,27 +1469,117 @@ public class BotService
                     }
                 }
             }
+            var teachersRating = user.SelectedLanguage switch
+            {
+                "uz" => "O'qituvchilarni baholash",
+                "ru" => "Оценка преподавателей",
+                "kk" => "Oqitiwshılardı bahalaw",
+                _ => "O'qituvchilarni baholash"
+            };
+            var corruptionQuestion = user.SelectedLanguage switch
+            {
+                "uz" => "Korrupsiya so'rovnomasi",
+                "ru" => "Антикоррупционный опрос",
+                "kk" => "Korrupciyaǵa qarsı so‘rawnama",
+                _ => "Korrupsiya so'rovnomasi"
+            };
 
+            var adminPanel = user.SelectedLanguage switch
+            {
+                "uz" => "Admin Panel - Statistika",
+                "ru" => "Панель администратора – Статистика",
+                "kk" => "Admin Panel – Statistika",
+                _ => "Admin Panel - Statistika"
+            };
+            var totallyInfo = user.SelectedLanguage switch
+            {
+                "uz" => "Umumiy ma'lumotlar:",
+                "ru" => "Общая информация:",
+                "kk" => "Umumiy maǵlıwmatlar:",
+                _ => "Umumiy ma'lumotlar"
+            };
+
+            var participants = user.SelectedLanguage switch
+            {
+                "uz" => "Ishtirokchilar soni:",
+                "ru" => "Количество участников:",
+                "kk" => "Qatnasıwshılar sanı:",
+                _ => "Ishtirokchilar soni:"
+            };
+
+            var totalAnswers = user.SelectedLanguage switch
+            {
+                "uz" => "Jami javoblar:",
+                "ru" => "Всего ответов:",
+                "kk" => "Jami juwaplar sanı:",
+                _ => "Jami javoblar:"
+            };
+
+            var analysis = user.SelectedLanguage switch
+            {
+                "uz" => "Javoblar tahlili:",
+                "ru" => "Анализ ответов:",
+                "kk" => "Juwaplar taldawı:",
+                _ => "Javoblar tahlili:"
+            };
+
+            var positive = user.SelectedLanguage switch
+            {
+                "uz" => "Ijobiy javoblar:",
+                "ru" => "Положительные ответы:",
+                "kk" => "Oń juwaplar:",
+                _ => "Ijobiy javoblar:"
+            };
+
+            var negative = user.SelectedLanguage switch
+            {
+                "uz" => "Salbiy javoblar:",
+                "ru" => "Отрицательные ответы:",
+                "kk" => "Teris juwaplar:",
+                _ => "Salbiy javoblar:"
+            };
+
+            var other = user.SelectedLanguage switch
+            {
+                "uz" => "Boshqa:",
+                "ru" => "Прочие:",
+                "kk" => "Basqa:",
+                _ => "Boshqa"
+            };
+
+            var pieces = user.SelectedLanguage switch
+            {
+                "uz" => "ta",
+                "ru" => "шт",
+                "kk" => "dana",
+                _ => "ta"
+            };
             var surveyTitle = surveyType == "teacher"
-                ? "📊 O'qituvchilarni baholash"
-                : "📝 Korrupsiya so'rovnomasi";
+                ? $"📊 {teachersRating}"
+                : $"📝 {corruptionQuestion}";
 
-            var statsMessage = $"👨‍💼 Admin Panel - Statistika\n\n" +
+            var statsMessage = $"👨‍💼 {adminPanel}\n\n" +
                              $"{surveyTitle}\n\n" +
-                             $"📊 Umumiy ma'lumotlar:\n" +
+                             $"📊 {totallyInfo}\n" +
                              $"━━━━━━━━━━━━━━━━\n" +
-                             $"👥 Ishtirokchilar soni: {uniqueUsers} ta\n" +
-                             $"💬 Jami javoblar: {totalResponses} ta\n\n" +
-                             $"📈 Javoblar tahlili:\n" +
+                             $"👥 {participants} {uniqueUsers} {pieces}\n" +
+                             $"💬 {totalAnswers} {totalResponses} {pieces}\n\n" +
+                             $"📈 {analysis}\n" +
                              $"━━━━━━━━━━━━━━━━\n" +
-                             $"✅ Ijobiy javoblar: {positiveCount} ta ({(totalResponses > 0 ? (positiveCount * 100.0 / totalResponses).ToString("F1") : "0")}%)\n" +
-                             $"❌ Salbiy javoblar: {negativeCount} ta ({(totalResponses > 0 ? (negativeCount * 100.0 / totalResponses).ToString("F1") : "0")}%)\n" +
-                             $"⚪ Boshqa: {totalResponses - positiveCount - negativeCount} ta";
-
+                             $"✅ {positive} {positiveCount} {pieces} ({(totalResponses > 0 ? (positiveCount * 100.0 / totalResponses).ToString("F1") : "0")}%)\n" +
+                             $"❌ {negative} {negativeCount} {pieces} ({(totalResponses > 0 ? (negativeCount * 100.0 / totalResponses).ToString("F1") : "0")}%)\n" +
+                             $"⚪ {other} {totalResponses - positiveCount - negativeCount} {pieces}";
+            var backButtonText = user.SelectedLanguage switch
+            {
+                "uz" => "🔙 Orqaga",
+                "ru" => "🔙 Назад",
+                "kk" => "🔙 Артқa",
+                _ => "🔙 Orqaga"
+            };
             // Show back button with ReplyKeyboard
             var keyboard = new ReplyKeyboardMarkup(new[]
             {
-                new KeyboardButton[] { "🔙 Orqaga" }
+                new KeyboardButton[] { $"{backButtonText}" }
             })
             {
                 ResizeKeyboard = true,
